@@ -1,0 +1,12 @@
+{
+  "upstream": "SideloadLabs/EeveeSpotifyReincarnated",
+  "upstreamWorkflow": ".github/workflows/build-and-release-yourself.yml",
+  "upstreamWorkflowSha256": "3a5bd8f714ca90c60ec06541fc68c6f97b507d34d3d5a7619af9b379924bdb9c",
+  "baseName": "Spotify",
+  "baseBundleId": "com.spotify.client",
+  "appStoreId": 324684580,
+  "targetVersion": {
+    "file": "README.md",
+    "regex": "\\*\\*Spotify Version:\\*\\* `([0-9.]+)`"
+  }
+}

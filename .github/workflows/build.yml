@@ -1,0 +1,204 @@
+# Based on SideloadLabs/EeveeSpotifyReincarnated's build-and-release-yourself.yml.
+# Injects upstream's released .deb into a decrypted Spotify IPA from the
+# "base-ipas" draft release, then publishes both IPAs (+ upstream's .debs).
+
+name: Build
+run-name: Build ${{ inputs.upstream_tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "EeveeSpotifyReincarnated release tag to build (e.g. v7.0.0)"
+        required: true
+        type: string
+      spotify_version:
+        description: "(Optional) Base IPA version to use; defaults to the version upstream targets"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: build-${{ inputs.upstream_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      THEOS: ${{ github.workspace }}/theos
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.upstream_tag }}
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: pipeline
+
+      - name: Read config
+        id: cfg
+        run: |
+          C=pipeline/config.json
+          echo "upstream=$(jq -r .upstream $C)" >> "$GITHUB_OUTPUT"
+          echo "file=$(jq -r .targetVersion.file $C)" >> "$GITHUB_OUTPUT"
+          jq -r .targetVersion.regex $C > "$RUNNER_TEMP/target-regex"
+
+      - name: Checkout upstream at ${{ inputs.upstream_tag }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.cfg.outputs.upstream }}
+          ref: ${{ inputs.upstream_tag }}
+          path: main
+          submodules: recursive
+
+      - name: Apply local patches
+        run: |
+          shopt -s nullglob
+          for p in pipeline/patches/*.patch; do
+            echo "Applying $p"
+            git -C main apply --verbose "$GITHUB_WORKSPACE/$p"
+          done
+
+      - name: Read versions
+        id: ver
+        run: |
+          SPOT="${{ inputs.spotify_version }}"
+          if [ -z "$SPOT" ]; then
+            SPOT=$(python3 -c 'import re,sys; print(re.search(open(sys.argv[1]).read().strip(), open(sys.argv[2]).read()).group(1))' \
+              "$RUNNER_TEMP/target-regex" "main/${{ steps.cfg.outputs.file }}")
+          fi
+          echo "spotify=$SPOT" >> "$GITHUB_OUTPUT"
+          echo "tweak=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git -C main rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Spotify $SPOT, EeveeSpotify ${TAG#v}"
+
+      - name: Download base IPA
+        run: |
+          # gh release download doesn't reliably find draft releases, so go through the API.
+          NAME="Spotify_${{ steps.ver.outputs.spotify }}.ipa"
+          ID=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            -q ".[] | select(.draft and .tag_name == \"base-ipas\") | .assets[] | select(.name == \"$NAME\") | .id")
+          [ -n "$ID" ] || { echo "::error::$NAME not found in the base-ipas draft release"; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$ID" -o spotify.ipa
+          ACTUAL=$(unzip -p spotify.ipa 'Payload/Spotify.app/Info.plist' | plutil -extract CFBundleShortVersionString raw -)
+          echo "Base IPA is Spotify $ACTUAL"
+          echo "SPOT_VERSION=$ACTUAL" >> "$GITHUB_ENV"
+
+      - name: Download upstream .debs
+        run: |
+          mkdir -p debs
+          gh release download "$TAG" -R "${{ steps.cfg.outputs.upstream }}" -p '*.deb' -D debs
+          ls -l debs
+          ROOTLESS=$(ls debs/*_iphoneos-arm64.deb | head -1)
+          [ -n "$ROOTLESS" ] || { echo "::error::no rootless (iphoneos-arm64) .deb on upstream $TAG"; exit 1; }
+          echo "ROOTLESS_DEB=$ROOTLESS" >> "$GITHUB_ENV"
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Setup Theos (for zxPluginsInject)
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          path: theos
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          brew install make dpkg ldid wget
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          python3 -m pip install --upgrade --break-system-packages git+https://github.com/asdfzxcvbn/pyzule-rw.git
+          ARCH=$(uname -m); [ "$ARCH" = "x86_64" ] && SUFFIX=macos-amd64 || SUFFIX=macos-arm64
+          sudo curl -fsSL "https://github.com/asdfzxcvbn/ipapatch/releases/latest/download/ipapatch.${SUFFIX}" -o /usr/local/bin/ipapatch
+          sudo chmod +x /usr/local/bin/ipapatch
+
+      - name: Build zxPluginsInject.dylib
+        run: cd main && bash Tools/build-zxpi.sh
+
+      - name: Inject .deb into IPA (cyan)
+        run: |
+          EXTRACT="$RUNNER_TEMP/deb-extract"; mkdir -p "$EXTRACT"
+          dpkg-deb -R "$ROOTLESS_DEB" "$EXTRACT"
+          DYLIB=$(find "$EXTRACT" -name 'EeveeSpotify.dylib' | head -1)
+          BUNDLE=$(find "$EXTRACT" -type d -name 'EeveeSpotify.bundle' | head -1)
+          FRAMEWORK=$(find "$EXTRACT" -type d -name 'EeveeSwiftProtobuf.framework' | head -1)
+          [ -n "$DYLIB" ] || { echo "::error::EeveeSpotify.dylib not in $ROOTLESS_DEB"; exit 1; }
+          INJECT=("$DYLIB")
+          [ -n "$FRAMEWORK" ] && INJECT+=("$FRAMEWORK")
+          [ -n "$BUNDLE" ] && INJECT+=("$BUNDLE")
+
+          mkdir -p out
+          OUT="out/EeveeSpotify_${SPOT_VERSION}_v${{ steps.ver.outputs.tweak }}.ipa"
+          cyan -i spotify.ipa -o "$OUT" -f "${INJECT[@]}" -c 9 -m 15.0 -du
+          echo "OUT_IPA=$OUT" >> "$GITHUB_ENV"
+
+      - name: Add Open in Spotify Safari extension, strip Watch app
+        run: |
+          git clone --quiet --depth 1 https://github.com/BillyCurtis/OpenSpotifySafariExtension.git "$RUNNER_TEMP/ext"
+          APPEX="$RUNNER_TEMP/ext/OpenSpotifySafariExtension.appex"
+          [ -e "$APPEX" ] || { echo "::error::OpenSpotifySafariExtension.appex not found"; exit 1; }
+          WORK="$RUNNER_TEMP/ipa-work"; rm -rf "$WORK"; mkdir -p "$WORK"
+          unzip -q "$OUT_IPA" -d "$WORK"
+          APP="$WORK/Payload/Spotify.app"
+          mkdir -p "$APP/PlugIns"
+          rm -rf "$APP/PlugIns/OpenSpotifySafariExtension.appex" "$APP/com.apple.WatchPlaceholder" "$APP/Watch"
+          cp -R "$APPEX" "$APP/PlugIns/"
+          rm -f "$OUT_IPA"
+          (cd "$WORK" && zip -qry "$GITHUB_WORKSPACE/$OUT_IPA" Payload)
+
+      - name: Register alternate app icons
+        run: |
+          IPA="$GITHUB_WORKSPACE/$OUT_IPA"
+          cd main && bash Tools/alt-icons.sh "$IPA"
+
+      - name: Create sideload IPA (zxPluginsInject)
+        run: |
+          SIDELOAD="${OUT_IPA%.ipa}_sideload.ipa"
+          cp "$OUT_IPA" "$SIDELOAD"
+          ipapatch --input "$SIDELOAD" --inplace --noconfirm --dylib main/packages/zxPluginsInject.dylib
+          echo "SIDELOAD_IPA=$SIDELOAD" >> "$GITHUB_ENV"
+
+      - name: Collect files
+        run: |
+          cp debs/*.deb out/
+          ls -l out
+          shasum -a 256 out/*
+
+      - name: Publish release
+        run: |
+          RELEASE_TAG="$TAG-spotify$SPOT_VERSION"
+          UPSTREAM_NOTES=$(gh release view "$TAG" -R "${{ steps.cfg.outputs.upstream }}" --json body -q .body | tr -d '\r' || true)
+          cat > notes.md <<EOF
+          EeveeSpotify [\`$TAG\`](https://github.com/${{ steps.cfg.outputs.upstream }}/releases/tag/$TAG) (\`${{ steps.ver.outputs.commit }}\`) injected into **Spotify $SPOT_VERSION**.
+
+          | File | For |
+          | --- | --- |
+          | \`$(basename "$SIDELOAD_IPA")\` | SideStore, AltStore, LiveContainer, Sideloadly, signing services |
+          | \`$(basename "$OUT_IPA")\` | TrollStore (keeps CarPlay/Siri) |
+          | \`*_iphoneos-arm64.deb\` | Rootless jailbreak (upstream's build) |
+          | \`*_iphoneos-arm64e-roothide.deb\` | RootHide jailbreak (upstream's build) |
+
+          Also available through the [Meta's Apps source](https://ometavr.github.io/ipa-source/source.json).
+
+          ---
+
+          <details><summary>Upstream release notes</summary>
+
+          $UPSTREAM_NOTES
+
+          </details>
+          EOF
+          TITLE="EeveeSpotify ${{ steps.ver.outputs.tweak }} (Spotify $SPOT_VERSION)"
+          if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" out/* -R "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --title "$TITLE" --notes-file notes.md
+          else
+            gh release create "$RELEASE_TAG" out/* -R "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --notes-file notes.md --target "$GITHUB_SHA"
+          fi
