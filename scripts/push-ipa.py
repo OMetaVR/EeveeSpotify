@@ -105,7 +105,8 @@ def main():
 
     tag = json.loads(gh("api", f"repos/{CONFIG['upstream']}/releases/latest"))["tag_name"]
     tv = CONFIG["targetVersion"]
-    text = gh("api", f"repos/{CONFIG['upstream']}/contents/{tv['file']}?ref={tag}", "-H", "Accept: application/vnd.github.raw")
+    ref = json.loads(gh("api", f"repos/{CONFIG['upstream']}"))["default_branch"] if tv.get("fromDefaultBranch") else tag
+    text = gh("api", f"repos/{CONFIG['upstream']}/contents/{tv['file']}?ref={ref}", "-H", "Accept: application/vnd.github.raw")
     target = re.search(tv["regex"], text).group(1)
     if version != target:
         print(f"warning: upstream {tag} targets {CONFIG['baseName']} {target}, this IPA is {version}", file=sys.stderr)

@@ -7,6 +7,7 @@
   "appStoreId": 324684580,
   "targetVersion": {
     "file": "README.md",
-    "regex": "\\*\\*Spotify Version:\\*\\* `([0-9.]+)`"
+    "regex": "\\*\\*Spotify Version:\\*\\* `([0-9.]+)`",
+    "fromDefaultBranch": true
   }
 }

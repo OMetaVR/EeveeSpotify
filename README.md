@@ -29,7 +29,7 @@ Build (macOS, ~10 min)
 ipa-source picks up the new release within the hour
 ```
 
-- **Target version:** upstream's README states the supported Spotify version (`**Spotify Version:** \`9.1.88\``); `config.json` → `targetVersion` says where to read it.
+- **Target version:** upstream's README states the supported Spotify version (`**Spotify Version:** \`9.1.88\``); `config.json` → `targetVersion` says where to read it. It's read from the default branch, because upstream bumps it there after releases without code changes (v7.0.0's tag says 9.1.84, Master says 9.1.88).
 - **Nothing is compiled except zxPluginsInject.** The tweak itself is upstream's own prebuilt `.deb`, the same input as upstream's `build-and-release-yourself.yml`.
 - **Base IPAs** live in the private `base-ipas` draft release.
 - Failed builds open an issue and aren't retried automatically; an upstream change to `build-and-release-yourself.yml` opens an issue too.

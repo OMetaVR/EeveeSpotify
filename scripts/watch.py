@@ -71,7 +71,10 @@ def main():
     rel = gh_json("api", f"repos/{UPSTREAM}/releases/latest")
     tag = rel["tag_name"]
     tv = CONFIG["targetVersion"]
-    ver = re.search(tv["regex"], upstream_file(tv["file"], tag).decode()).group(1)
+    # Upstream sometimes bumps the supported version in its README after a release
+    # without touching code, so the default branch can be the more current statement.
+    ref = gh_json("api", f"repos/{UPSTREAM}")["default_branch"] if tv.get("fromDefaultBranch") else tag
+    ver = re.search(tv["regex"], upstream_file(tv["file"], ref).decode()).group(1)
     release_tag = f"{tag}-{BASE.lower()}{ver}"
     print(f"Upstream {UPSTREAM} {tag} targets {BASE} {ver}")
 
@@ -108,7 +111,7 @@ def main():
     draft = next((r for r in releases if r["draft"] and r["tag_name"] == DRAFT_TAG), None)
     asset = f"{BASE}_{ver}.ipa"
     if draft and any(a["name"] == asset for a in draft["assets"]):
-        gh("workflow", "run", "build.yml", "-R", REPO, "-f", f"upstream_tag={tag}")
+        gh("workflow", "run", "build.yml", "-R", REPO, "-f", f"upstream_tag={tag}", "-f", f"spotify_version={ver}")
         print(f"Started build for {tag} with {asset}")
         return
 

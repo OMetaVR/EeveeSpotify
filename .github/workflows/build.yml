@@ -44,8 +44,10 @@ jobs:
         run: |
           C=pipeline/config.json
           echo "upstream=$(jq -r .upstream $C)" >> "$GITHUB_OUTPUT"
-          echo "file=$(jq -r .targetVersion.file $C)" >> "$GITHUB_OUTPUT"
+          FILE=$(jq -r .targetVersion.file $C)
+          REF=$(jq -r 'if .targetVersion.fromDefaultBranch then "" else "?ref=${{ inputs.upstream_tag }}" end' $C)
           jq -r .targetVersion.regex $C > "$RUNNER_TEMP/target-regex"
+          gh api "repos/$(jq -r .upstream $C)/contents/$FILE$REF" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/target-file"
 
       - name: Checkout upstream at ${{ inputs.upstream_tag }}
         uses: actions/checkout@v4
@@ -69,7 +71,7 @@ jobs:
           SPOT="${{ inputs.spotify_version }}"
           if [ -z "$SPOT" ]; then
             SPOT=$(python3 -c 'import re,sys; print(re.search(open(sys.argv[1]).read().strip(), open(sys.argv[2]).read()).group(1))' \
-              "$RUNNER_TEMP/target-regex" "main/${{ steps.cfg.outputs.file }}")
+              "$RUNNER_TEMP/target-regex" "$RUNNER_TEMP/target-file")
           fi
           echo "spotify=$SPOT" >> "$GITHUB_OUTPUT"
           echo "tweak=${TAG#v}" >> "$GITHUB_OUTPUT"
