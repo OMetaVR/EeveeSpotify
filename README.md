@@ -1,3 +1,5 @@
+> **Archived.** This pipeline moved to [OMetaVR/EeveeSpotifyReincarnated](https://github.com/OMetaVR/EeveeSpotifyReincarnated), a fork built by the shared [ipa-pipeline](https://github.com/OMetaVR/ipa-pipeline). Old releases stay here.
+
 # EeveeSpotify builds
 
 Automatic IPA builds of [EeveeSpotifyReincarnated](https://github.com/SideloadLabs/EeveeSpotifyReincarnated), the maintained continuation of whoeevee's EeveeSpotify (EeveeSpotifyReborn was archived in December 2025). Each [release](../../releases) has:
